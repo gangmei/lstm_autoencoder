@@ -18,6 +18,14 @@ To perform efficient batching for the potentially large number of training examp
 load_data = mpu.io.read('word2vec.pickle')
 targets, contexts, labels = load_data['targets'], load_data['contexts'], load_data['labels']
 
+randout = np.random.rand(*labels.shape)
+idx = np.argsort(randout, axis=-1)
+contexts = contexts[np.repeat(
+    np.arange(labels.shape[0])[..., np.newaxis], labels.shape[1], axis=1), idx]
+labels = labels[np.repeat(np.arange(labels.shape[0])
+                          [..., np.newaxis], labels.shape[1], axis=1), idx]
+
+
 vocab_size = np.max(contexts) + 1
 num_ns = labels.shape[-1] - 1
 BATCH_SIZE = 1024
