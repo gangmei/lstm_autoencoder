@@ -17,15 +17,15 @@ To perform efficient batching for the potentially large number of training examp
 """
 load_data = mpu.io.read('word2vec.pickle')
 targets, contexts, labels = load_data['targets'], load_data['contexts'], load_data['labels']
-if len(targets.shape) == 1:
-    targets = targets[..., np.newaxis]
+# if len(targets.shape) == 1:
+#     targets = targets[..., np.newaxis]
 
-randout = np.random.rand(*labels.shape)
-idx = np.argsort(randout, axis=-1)
-contexts = contexts[np.repeat(
-    np.arange(labels.shape[0])[..., np.newaxis], labels.shape[1], axis=1), idx]
-labels = labels[np.repeat(np.arange(labels.shape[0])
-                          [..., np.newaxis], labels.shape[1], axis=1), idx]
+# randout = np.random.rand(*labels.shape)
+# idx = np.argsort(randout, axis=-1)
+# contexts = contexts[np.repeat(
+#     np.arange(labels.shape[0])[..., np.newaxis], labels.shape[1], axis=1), idx]
+# labels = labels[np.repeat(np.arange(labels.shape[0])
+#                           [..., np.newaxis], labels.shape[1], axis=1), idx]
 
 
 vocab_size = np.max(contexts) + 1
@@ -82,19 +82,10 @@ class Word2Vec(models.Model):
 
         # target: (batch,)
         word_emb = self.target_embedding(target)
-
-        word_emb = tf.math.l2_normalize(word_emb, -1)
         # word_emb: (batch, embed)
         context_emb = self.context_embedding(context)
-        context_emb = tf.math.l2_normalize(context_emb, -1)
-
         # context_emb: (batch, context, embed)
-        # dots = tf.einsum('bde,bce->bdc', word_emb, context_emb)
-        # if len(dots.shape) > 2:
-        #     dots = tf.squeeze(dots)
-        dots = tf.squeeze(tf.matmul(context_emb, word_emb,
-                          transpose_b=True), axis=-1)
-
+        dots = layers.Dot(axes=-1, normalize=True)([context_emb, word_emb])
         dots = dots / self.temperature
         # dots: (batch, context)
         return dots
@@ -102,7 +93,6 @@ class Word2Vec(models.Model):
     def get_model(self):
         target = tf.keras.Input(shape=(1,))
         context = tf.keras.Input(shape=(self.context_dim,))
-
         output = self.call((target, context))
         model = tf.keras.Model(
             inputs=[target, context], outputs=output, name="word2vec_model")
