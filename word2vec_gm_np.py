@@ -16,30 +16,19 @@ AUTOTUNE = tf.data.AUTOTUNE
 
 To perform efficient batching for the potentially large number of training examples, use the `tf.data.Dataset` API. After this step, you would have a `tf.data.Dataset` object of `(target_word, context_word), (label)` elements to train your word2vec model!
 """
-load_data = mpu.io.read('word2vec_neg100.pickle')
+load_data = mpu.io.read('word2vec.pickle')
+use_pretrained = True
+
 targets, contexts, labels = load_data['targets'], load_data['contexts'], load_data['labels']
-# if len(targets.shape) == 1:
-#     targets = targets[..., np.newaxis]
-
-# randout = np.random.rand(*labels.shape)
-# idx = np.argsort(randout, axis=-1)
-# contexts = contexts[np.repeat(
-#     np.arange(labels.shape[0])[..., np.newaxis], labels.shape[1], axis=1), idx]
-# labels = labels[np.repeat(np.arange(labels.shape[0])
-#                           [..., np.newaxis], labels.shape[1], axis=1), idx]
-
 
 vocab_size = np.max(contexts) + 1
 num_ns = labels.shape[-1] - 1
 BATCH_SIZE = 1024
 BUFFER_SIZE = 10000
 
-train_ratio = 0.75
-validation_ratio = 0.15
 test_ratio = 0.10
 
-# train is now 75% of the entire data set
-# the _junk suffix means that we drop that variable completely
+# train is now 90% of the entire data set
 train_targets, test_targets, train_contexts, test_contexts, train_labels, test_labels = train_test_split(
     targets, contexts, labels, test_size=test_ratio, random_state=42)
 
@@ -82,6 +71,11 @@ class Word2Vec(models.Model):
         self.context_dim = context_dim
         self.normalize = normalize
 
+        self.compile(optimizer='adam',
+                     loss=tf.keras.losses.CategoricalCrossentropy(
+                         from_logits=True),
+                     metrics=['accuracy'])
+
     def call(self, pair):
         target, context = pair
         # target: (batch, dummy?)  # The dummy axis doesn't exist in TF2.7+
@@ -94,17 +88,26 @@ class Word2Vec(models.Model):
         # context_emb: (batch, context, embed)
         dots = layers.Dot(
             axes=-1, normalize=self.normalize)([context_emb, word_emb])
+        dots = layers.Flatten()(dots)
         dots = dots / self.temperature
         # dots: (batch, context)
         return dots
 
-    def get_model(self):
+    def build_graph(self):
         target = tf.keras.Input(shape=(1,))
         context = tf.keras.Input(shape=(self.context_dim,))
         output = self.call((target, context))
         model = tf.keras.Model(
             inputs=[target, context], outputs=output, name="word2vec_model")
         return model
+
+    def save_model(self, path_to_file: str = 'word2vec_model.h5'):
+        self.save_weights(path_to_file)
+
+    def load_model(self, path_to_file: str = 'word2vec_model.h5'):
+        self.predict(
+            (np.random.rand(5, 1), np.random.rand(5, self.context_dim)))
+        self.load_weights(path_to_file)
 
 
 """### Define loss function and compile model
@@ -122,27 +125,23 @@ It's time to build your model! Instantiate your word2vec class with an embedding
 embedding_dim = 128
 word2vec = Word2Vec(vocab_size, embedding_dim,
                     context_dim=num_ns+1, temperature=0.1, normalize=True, share_emebdding=True)
-word2vec.compile(optimizer='adam',
-                 loss=tf.keras.losses.CategoricalCrossentropy(
-                     from_logits=True),
-                 metrics=['accuracy'])
 # word2vec.run_eagerly = True
-
-m1 = word2vec.get_model()
-tf.keras.utils.plot_model(m1, show_shapes=True)
-print(type(m1))
 
 
 """Also define a callback to log training statistics for Tensorboard:"""
-
-tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir="logs")
-
 """Train the model on the `dataset` for some number of epochs:"""
+if use_pretrained:
+    word2vec.load_model()
+else:
+    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir="logs")
+    word2vec.fit((train_targets, train_contexts), train_labels, batch_size=BATCH_SIZE, epochs=20, validation_split=0.05,
+                 callbacks=[tensorboard_callback])
+    word2vec.save_model()
 
-word2vec.fit((train_targets, train_contexts), train_labels, batch_size=BATCH_SIZE, epochs=20, validation_split=0.05,
-             callbacks=[tensorboard_callback])
+tf.keras.utils.plot_model(word2vec.build_graph(), show_shapes=True)
 
 _, test_acc = word2vec.evaluate(
     (test_targets, test_contexts), test_labels, batch_size=BATCH_SIZE, verbose=0)
 """Tensorboard now shows the word2vec model's accuracy and loss:"""
+
 print('test accuracy', test_acc)
