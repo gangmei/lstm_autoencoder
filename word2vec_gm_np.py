@@ -17,6 +17,8 @@ To perform efficient batching for the potentially large number of training examp
 """
 load_data = mpu.io.read('word2vec.pickle')
 targets, contexts, labels = load_data['targets'], load_data['contexts'], load_data['labels']
+if len(targets.shape) == 1:
+    targets = targets[..., np.newaxis]
 
 randout = np.random.rand(*labels.shape)
 idx = np.argsort(randout, axis=-1)
@@ -61,7 +63,7 @@ Key point: The `target_embedding` and `context_embedding` layers can be shared a
 
 
 class Word2Vec(models.Model):
-    def __init__(self, vocab_size, embedding_dim, temperature=1.0):
+    def __init__(self, vocab_size, embedding_dim, temperature=1.0, context_dim=5):
         super(Word2Vec, self).__init__()
         self.target_embedding = layers.Embedding(vocab_size,
                                                  embedding_dim,
@@ -69,15 +71,15 @@ class Word2Vec(models.Model):
                                                  name="w2v_embedding")
         self.context_embedding = layers.Embedding(vocab_size,
                                                   embedding_dim,
-                                                  input_length=num_ns+1)
+                                                  input_length=context_dim)
         self.temperature = temperature
+        self.context_dim = context_dim
 
     def call(self, pair):
         target, context = pair
         # target: (batch, dummy?)  # The dummy axis doesn't exist in TF2.7+
         # context: (batch, context)
-        if len(target.shape) == 2:
-            target = tf.squeeze(target, axis=1)
+
         # target: (batch,)
         word_emb = self.target_embedding(target)
 
@@ -87,11 +89,24 @@ class Word2Vec(models.Model):
         context_emb = tf.math.l2_normalize(context_emb, -1)
 
         # context_emb: (batch, context, embed)
-        dots = tf.einsum('be,bce->bc', word_emb, context_emb)
+        # dots = tf.einsum('bde,bce->bdc', word_emb, context_emb)
+        # if len(dots.shape) > 2:
+        #     dots = tf.squeeze(dots)
+        dots = tf.squeeze(tf.matmul(context_emb, word_emb,
+                          transpose_b=True), axis=-1)
 
         dots = dots / self.temperature
         # dots: (batch, context)
         return dots
+
+    def get_model(self):
+        target = tf.keras.Input(shape=(1,))
+        context = tf.keras.Input(shape=(self.context_dim,))
+
+        output = self.call((target, context))
+        model = tf.keras.Model(
+            inputs=[target, context], outputs=output, name="word2vec_model")
+        return model
 
 
 """### Define loss function and compile model
@@ -107,12 +122,17 @@ It's time to build your model! Instantiate your word2vec class with an embedding
 """
 
 embedding_dim = 128
-word2vec = Word2Vec(vocab_size, embedding_dim)
+word2vec = Word2Vec(vocab_size, embedding_dim, context_dim=num_ns+1)
 word2vec.compile(optimizer='adam',
                  loss=tf.keras.losses.CategoricalCrossentropy(
                      from_logits=True),
                  metrics=['accuracy'])
 # word2vec.run_eagerly = True
+
+m1 = word2vec.get_model()
+tf.keras.utils.plot_model(m1, show_shapes=True)
+print(type(m1))
+
 
 """Also define a callback to log training statistics for Tensorboard:"""
 
