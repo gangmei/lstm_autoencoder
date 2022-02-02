@@ -1,4 +1,5 @@
 import io
+from locale import normalize
 import re
 import string
 import tqdm
@@ -15,7 +16,7 @@ AUTOTUNE = tf.data.AUTOTUNE
 
 To perform efficient batching for the potentially large number of training examples, use the `tf.data.Dataset` API. After this step, you would have a `tf.data.Dataset` object of `(target_word, context_word), (label)` elements to train your word2vec model!
 """
-load_data = mpu.io.read('word2vec.pickle')
+load_data = mpu.io.read('word2vec_neg100.pickle')
 targets, contexts, labels = load_data['targets'], load_data['contexts'], load_data['labels']
 # if len(targets.shape) == 1:
 #     targets = targets[..., np.newaxis]
@@ -40,7 +41,7 @@ test_ratio = 0.10
 # train is now 75% of the entire data set
 # the _junk suffix means that we drop that variable completely
 train_targets, test_targets, train_contexts, test_contexts, train_labels, test_labels = train_test_split(
-    targets, contexts, labels, test_size=test_ratio)
+    targets, contexts, labels, test_size=test_ratio, random_state=42)
 
 
 """## Model and training
@@ -63,17 +64,23 @@ Key point: The `target_embedding` and `context_embedding` layers can be shared a
 
 
 class Word2Vec(models.Model):
-    def __init__(self, vocab_size, embedding_dim, temperature=1.0, context_dim=5):
+    def __init__(self, vocab_size, embedding_dim, temperature=1.0, context_dim=5, normalize=True, share_emebdding=False):
         super(Word2Vec, self).__init__()
         self.target_embedding = layers.Embedding(vocab_size,
                                                  embedding_dim,
                                                  input_length=1,
                                                  name="w2v_embedding")
-        self.context_embedding = layers.Embedding(vocab_size,
-                                                  embedding_dim,
-                                                  input_length=context_dim)
+
+        if share_emebdding:
+            self.context_embedding = self.target_embedding
+        else:
+            self.context_embedding = layers.Embedding(vocab_size,
+                                                      embedding_dim,
+                                                      input_length=context_dim)
+
         self.temperature = temperature
         self.context_dim = context_dim
+        self.normalize = normalize
 
     def call(self, pair):
         target, context = pair
@@ -85,7 +92,8 @@ class Word2Vec(models.Model):
         # word_emb: (batch, embed)
         context_emb = self.context_embedding(context)
         # context_emb: (batch, context, embed)
-        dots = layers.Dot(axes=-1, normalize=True)([context_emb, word_emb])
+        dots = layers.Dot(
+            axes=-1, normalize=self.normalize)([context_emb, word_emb])
         dots = dots / self.temperature
         # dots: (batch, context)
         return dots
@@ -112,7 +120,8 @@ It's time to build your model! Instantiate your word2vec class with an embedding
 """
 
 embedding_dim = 128
-word2vec = Word2Vec(vocab_size, embedding_dim, context_dim=num_ns+1)
+word2vec = Word2Vec(vocab_size, embedding_dim,
+                    context_dim=num_ns+1, temperature=0.1, normalize=True, share_emebdding=True)
 word2vec.compile(optimizer='adam',
                  loss=tf.keras.losses.CategoricalCrossentropy(
                      from_logits=True),

@@ -405,7 +405,7 @@ for seq in sequences[:5]:
 targets, contexts, labels = generate_training_data(
     sequences=sequences,
     window_size=2,
-    num_ns=4,
+    num_ns=100,
     vocab_size=vocab_size,
     seed=SEED)
 
