@@ -2,6 +2,7 @@ import io
 from locale import normalize
 import re
 import string
+from matplotlib.pyplot import axis
 import tqdm
 import numpy as np
 import tensorflow as tf
@@ -18,20 +19,19 @@ To perform efficient batching for the potentially large number of training examp
 """
 load_data = mpu.io.read('word2vec.pickle')
 use_pretrained = True
-load_model_path = 'word2vec_model_simclr.h5'
 
-targets, contexts, labels = load_data['targets'], load_data['contexts'], load_data['labels']
+targets, contexts = load_data['targets'], load_data['contexts']
+
 
 vocab_size = np.max(contexts) + 1
-num_ns = labels.shape[-1] - 1
+contexts = contexts[:, 0]
 BATCH_SIZE = 1024
-BUFFER_SIZE = 10000
 
 test_ratio = 0.10
 
 # train is now 90% of the entire data set
-train_targets, test_targets, train_contexts, test_contexts, train_labels, test_labels = train_test_split(
-    targets, contexts, labels, test_size=test_ratio, random_state=42)
+train_targets, test_targets, train_contexts, test_contexts = train_test_split(
+    targets, contexts, test_size=test_ratio, random_state=42)
 
 
 """## Model and training
@@ -53,23 +53,15 @@ Key point: The `target_embedding` and `context_embedding` layers can be shared a
 """
 
 
-class Word2Vec(models.Model):
-    def __init__(self, vocab_size, embedding_dim, temperature=1.0, context_dim=5, normalize=True, share_emebdding=False):
-        super(Word2Vec, self).__init__()
+class Word2Vec_SimCLR(models.Model):
+    def __init__(self, vocab_size, embedding_dim, temperature=1.0, normalize=True):
+        super(Word2Vec_SimCLR, self).__init__()
         self.target_embedding = layers.Embedding(vocab_size,
                                                  embedding_dim,
                                                  input_length=1,
                                                  name="w2v_embedding")
 
-        if share_emebdding:
-            self.context_embedding = self.target_embedding
-        else:
-            self.context_embedding = layers.Embedding(vocab_size,
-                                                      embedding_dim,
-                                                      input_length=context_dim)
-
         self.temperature = temperature
-        self.context_dim = context_dim
         self.normalize = normalize
 
         self.compile(optimizer='adam',
@@ -79,24 +71,74 @@ class Word2Vec(models.Model):
 
     def call(self, pair):
         target, context = pair
-        # target: (batch, dummy?)  # The dummy axis doesn't exist in TF2.7+
-        # context: (batch, context)
+        batch_size = target.shape[0]
 
-        # target: (batch,)
-        word_emb = self.target_embedding(target)
-        # word_emb: (batch, embed)
-        context_emb = self.context_embedding(context)
-        # context_emb: (batch, context, embed)
-        dots = layers.Dot(
-            axes=-1, normalize=self.normalize)([context_emb, word_emb])
-        dots = layers.Flatten()(dots)
-        dots = dots / self.temperature
-        # dots: (batch, context)
-        return dots
+        latent_a = self.target_embedding(target)
+        latent_b = self.target_embedding(context)
+
+        if self.normalize:
+            latent_a = tf.math.l2_normalize(latent_a, axis=-1)
+            latent_b = tf.math.l2_normalize(latent_b, axis=-1)
+
+        corr_aa = tf.matmul(latent_a, latent_a, transpose_b=True)
+        corr_ab = tf.matmul(latent_a, latent_b, transpose_b=True)
+        corr_bb = tf.matmul(latent_b, latent_b, transpose_b=True)
+        corr_ba = tf.matmul(latent_b, latent_a, transpose_b=True)
+
+        corr_neg = tf.eye(batch_size) * 1e6
+        corr_aa = layers.subtract([corr_aa, corr_neg])
+        corr_bb = layers.subtract([corr_bb, corr_neg])
+
+        logits_a = layers.concatenate([corr_ab, corr_aa])
+        logits_b = layers.concatenate([corr_bb, corr_ba])
+
+        logits_a = logits_a/self.temperature
+        logits_b = logits_b/self.temperature
+
+        output = layers.concatenate([logits_a, logits_b], axis=0)
+
+        return output
+
+    def train_step(self, data):
+        # Unpack the data. Its structure depends on your model and
+        # on what you pass to `fit()`.
+        x, _ = data
+        y = tf.eye(x[0].shape[0]*2)
+
+        with tf.GradientTape() as tape:
+            y_pred = self(x, training=True)  # Forward pass
+            # Compute the loss value
+            # (the loss function is configured in `compile()`)
+            loss = self.compiled_loss(
+                y, y_pred, regularization_losses=self.losses)
+
+        # Compute gradients
+        trainable_vars = self.trainable_variables
+        gradients = tape.gradient(loss, trainable_vars)
+        # Update weights
+        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+        # Update metrics (includes the metric that tracks the loss)
+        self.compiled_metrics.update_state(y, y_pred)
+        # Return a dict mapping metric names to current value
+        return {m.name: m.result() for m in self.metrics}
+
+    def test_step(self, data):
+        # Unpack the data
+        x, _ = data
+        y = tf.eye(x[0].shape[0]*2)
+        # Compute predictions
+        y_pred = self(x, training=False)
+        # Updates the metrics tracking the loss
+        self.compiled_loss(y, y_pred, regularization_losses=self.losses)
+        # Update the metrics.
+        self.compiled_metrics.update_state(y, y_pred)
+        # Return a dict mapping metric names to current value.
+        # Note that it will include the loss (tracked in self.metrics).
+        return {m.name: m.result() for m in self.metrics}
 
     def build_graph(self):
         target = tf.keras.Input(shape=(1,))
-        context = tf.keras.Input(shape=(self.context_dim,))
+        context = tf.keras.Input(shape=(1,))
         output = self.call((target, context))
         model = tf.keras.Model(
             inputs=[target, context], outputs=output, name="word2vec_model")
@@ -107,7 +149,7 @@ class Word2Vec(models.Model):
 
     def load_model(self, path_to_file: str = 'word2vec_model.h5'):
         self.predict(
-            (np.random.rand(5, 1), np.random.rand(5, self.context_dim)))
+            (np.random.rand(5, 1), np.random.rand(5, 1)))
         self.load_weights(path_to_file)
 
 
@@ -124,22 +166,23 @@ It's time to build your model! Instantiate your word2vec class with an embedding
 """
 
 embedding_dim = 128
-word2vec = Word2Vec(vocab_size, embedding_dim,
-                    context_dim=num_ns+1, temperature=0.1, normalize=True, share_emebdding=True)
-# word2vec.run_eagerly = True
+word2vec = Word2Vec_SimCLR(vocab_size, embedding_dim,
+                           temperature=0.1, normalize=True)
+word2vec.run_eagerly = True
 
 
 """Also define a callback to log training statistics for Tensorboard:"""
 """Train the model on the `dataset` for some number of epochs:"""
 if use_pretrained:
-    word2vec.load_model(load_model_path)
+    word2vec.load_model()
 else:
+    train_labels = np.zeros_like(train_targets)
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir="logs")
     word2vec.fit((train_targets, train_contexts), train_labels, batch_size=BATCH_SIZE, epochs=20, validation_split=0.05,
                  callbacks=[tensorboard_callback])
     word2vec.save_model()
 
-tf.keras.utils.plot_model(word2vec.build_graph(), show_shapes=True)
+test_labels = np.zeros_like(test_targets)
 
 _, test_acc = word2vec.evaluate(
     (test_targets, test_contexts), test_labels, batch_size=BATCH_SIZE, verbose=0)
