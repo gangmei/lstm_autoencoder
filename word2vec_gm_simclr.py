@@ -18,7 +18,9 @@ AUTOTUNE = tf.data.AUTOTUNE
 To perform efficient batching for the potentially large number of training examples, use the `tf.data.Dataset` API. After this step, you would have a `tf.data.Dataset` object of `(target_word, context_word), (label)` elements to train your word2vec model!
 """
 load_data = mpu.io.read('word2vec.pickle')
-use_pretrained = True
+use_pretrained = False
+load_model_path = 'word2vec_model_simclr.h5'
+
 
 targets, contexts = load_data['targets'], load_data['contexts']
 
@@ -174,7 +176,7 @@ word2vec.run_eagerly = True
 """Also define a callback to log training statistics for Tensorboard:"""
 """Train the model on the `dataset` for some number of epochs:"""
 if use_pretrained:
-    word2vec.load_model()
+    word2vec.load_model(load_model_path)
 else:
     train_labels = np.zeros_like(train_targets)
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir="logs")

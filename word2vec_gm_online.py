@@ -2,6 +2,7 @@ import io
 from locale import normalize
 import re
 import string
+from matplotlib import path
 import tqdm
 import numpy as np
 import tensorflow as tf
@@ -17,16 +18,23 @@ AUTOTUNE = tf.data.AUTOTUNE
 To perform efficient batching for the potentially large number of training examples, use the `tf.data.Dataset` API. After this step, you would have a `tf.data.Dataset` object of `(target_word, context_word), (label)` elements to train your word2vec model!
 """
 load_data = mpu.io.read('word2vec_onlinebase_neg100.pickle')
-use_pretrained = True
+use_pretrained = False
+use_base_weights = True
+
 load_model_path = 'word2vec_model_onlinebase.h5'
+load_base_weights_path = 'word2vec_embedding_onlinebase.npy'
+
 
 targets, contexts, labels = load_data['targets'], load_data['contexts'], load_data['labels']
 
-vocab_size = np.max(contexts) + 1
+# vocab_size = np.max(contexts) + 1
+vocab_size = 4096
+
 num_ns = labels.shape[-1] - 1
+# seperate out base corpus and new corpus
+
 BATCH_SIZE = 1024
 BUFFER_SIZE = 10000
-
 test_ratio = 0.10
 
 # train is now 90% of the entire data set
@@ -105,14 +113,21 @@ class Word2Vec(models.Model):
     def save_model(self, path_to_file: str = 'word2vec_model.h5'):
         self.save_weights(path_to_file)
 
-    def save_embedding(self, path_to_file: str = 'word2vec_embedding.npy'):
-        # self.save_weights(path_to_file)
-        np.save(path_to_file, self.target_embedding.get_weights()[0])
-
     def load_model(self, path_to_file: str = 'word2vec_model.h5'):
         self.predict(
             (np.random.rand(5, 1), np.random.rand(5, self.context_dim)))
         self.load_weights(path_to_file)
+
+    def load_base_weights(self, path_to_file: str = 'word2vec_embeddings.npy'):
+        self.predict(
+            (np.random.rand(5, 1), np.random.rand(5, self.context_dim)))
+        base_embedding_weights = np.load(path_to_file)
+        current_embedding_weights = self.target_embedding.get_weights()[0]
+
+        current_embedding_weights[:base_embedding_weights.shape[0]
+                                  ] = base_embedding_weights
+        self.target_embedding.set_weights([current_embedding_weights])
+        pass
 
 
 """### Define loss function and compile model
@@ -137,12 +152,13 @@ word2vec = Word2Vec(vocab_size, embedding_dim,
 """Train the model on the `dataset` for some number of epochs:"""
 if use_pretrained:
     word2vec.load_model(load_model_path)
+elif use_base_weights:
+    word2vec.load_base_weights(load_base_weights_path)
 else:
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir="logs")
     word2vec.fit((train_targets, train_contexts), train_labels, batch_size=BATCH_SIZE, epochs=20, validation_split=0.05,
                  callbacks=[tensorboard_callback])
     word2vec.save_model()
-    word2vec.save_embedding()
 
 tf.keras.utils.plot_model(word2vec.build_graph(), show_shapes=True)
 
