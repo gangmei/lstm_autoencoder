@@ -11,8 +11,6 @@ import mpu
 from sklearn.model_selection import train_test_split
 
 SEED = 42
-AUTOTUNE = tf.data.AUTOTUNE
-
 """### Configure the dataset for performance
 
 To perform efficient batching for the potentially large number of training examples, use the `tf.data.Dataset` API. After this step, you would have a `tf.data.Dataset` object of `(target_word, context_word), (label)` elements to train your word2vec model!
@@ -20,6 +18,7 @@ To perform efficient batching for the potentially large number of training examp
 load_data = mpu.io.read('word2vec_onlinenew_neg100.pickle')
 use_pretrained = False
 use_base_weights = True
+finetune_base_weights = True
 
 load_model_path = 'word2vec_model_onlinebase.h5'
 load_base_weights_path = 'word2vec_embedding_onlinebase.npy'
@@ -30,7 +29,6 @@ targets, contexts, labels = load_data['targets'], load_data['contexts'], load_da
 contexts = np.squeeze(contexts)
 # vocab_size = np.max(contexts) + 1
 vocab_size = 4096
-
 num_ns = labels.shape[-1] - 1
 # seperate out base corpus and new corpus
 
@@ -62,27 +60,6 @@ Key point: The `target_embedding` and `context_embedding` layers can be shared a
 """
 
 
-def online_embed(base_embedding, online_embedding, input_tensor, base_vocab_size):
-    # input_tensor = tf.transpose(tf.constant(
-    #     np.array([[176, 3905, 4000, 980, 23]])))
-    if len(input_tensor.shape) < 2:
-        input_tensor = tf.expand_dims(input_tensor, axis=-1)
-    input_mask = tf.cast(input_tensor < base_vocab_size, dtype=tf.int64)
-    base_output = base_embedding(input_mask * input_tensor)
-    input_mask2 = tf.repeat(tf.expand_dims(
-        input_mask, axis=-1), base_output.shape[-1], axis=2)
-
-    base_output_masked = layers.multiply(
-        [base_output, tf.cast(input_mask2, dtype=tf.float32)])
-
-    online_output = online_embedding(
-        (1-input_mask) * (input_tensor-base_vocab_size))
-    online_output_masked = layers.multiply(
-        [online_output, tf.cast(1-input_mask2, dtype=tf.float32)])
-    # pass
-    return base_output_masked + online_output_masked
-
-
 class Word2Vec_Online(models.Model):
     def __init__(self, vocab_size, base_vocab_size, embedding_dim, temperature=1.0, context_dim=5, normalize=True, share_emebdding=False):
         super(Word2Vec_Online, self).__init__()
@@ -101,36 +78,54 @@ class Word2Vec_Online(models.Model):
         self.base_vocab_size = base_vocab_size
         self.vocab_size = vocab_size
 
-        self.compile(optimizer='adam',
-                     loss=tf.keras.losses.CategoricalCrossentropy(
-                         from_logits=True),
-                     metrics=['accuracy'])
+        # self.base_target_embedding.build(tf.TensorShape([None, 1]))
+        # self.online_target_embedding.build(tf.TensorShape([None, context_dim]))
+
+    def online_embed(self, input_tensor):
+        """ method to apply online embedding with an input tensor. 
+        For tokens within base vocab (id < base_vocab_size), apply base_target_embedding.
+        For new tokens (id >= base_vocab_size, apply online_target_embedding) 
+
+        Args:
+            input_tensor ([type]): input tensor, target or context
+
+        Returns:
+            [type]: embedding output tensor for the input tensor
+        """
+        if len(input_tensor.shape) < 2:
+            input_tensor = tf.expand_dims(input_tensor, axis=-1)
+        input_mask = tf.cast(
+            input_tensor < self.base_vocab_size, dtype=tf.int64)
+
+        base_output = self.base_target_embedding(input_mask * input_tensor)
+        input_mask2 = tf.repeat(tf.expand_dims(
+            input_mask, axis=-1), base_output.shape[-1], axis=2)
+        base_output_masked = layers.multiply(
+            [base_output, tf.cast(input_mask2, dtype=tf.float32)])
+
+        online_output = self.online_target_embedding(
+            (1-input_mask) * (input_tensor-self.base_vocab_size))
+        online_output_masked = layers.multiply(
+            [online_output, tf.cast(1-input_mask2, dtype=tf.float32)])
+
+        return base_output_masked + online_output_masked
 
     def call(self, pair):
         target, context = pair
-        # target: (batch, dummy?)  # The dummy axis doesn't exist in TF2.7+
-        # context: (batch, context)
 
-        word_emb = online_embed(
-            self.base_target_embedding, self.online_target_embedding, target, self.base_vocab_size)
+        word_emb = self.online_embed(target)
+        context_emb = self.online_embed(context)
 
-        # target: (batch,)
-        # word_emb = self.base_target_embedding(target)
-        # word_emb: (batch, embed)
-        # context_emb = self.base_target_embedding(context)
-        context_emb = online_embed(
-            self.base_target_embedding, self.online_target_embedding, context, self.base_vocab_size)
-        # context_emb: (batch, context, embed)
         dots = layers.Dot(
             axes=-1, normalize=self.normalize)([context_emb, word_emb])
         dots = layers.Flatten()(dots)
         dots = dots / self.temperature
-        # dots: (batch, context)
+
         return dots
 
     def build_graph(self):
-        target = tf.keras.Input(shape=(1,))
-        context = tf.keras.Input(shape=(self.context_dim,))
+        target = tf.keras.Input(shape=(1,), dtype=tf.int64)
+        context = tf.keras.Input(shape=(self.context_dim,), dtype=tf.int64)
         output = self.call((target, context))
         model = tf.keras.Model(
             inputs=[target, context], outputs=output, name="word2vec_model")
@@ -140,20 +135,16 @@ class Word2Vec_Online(models.Model):
         self.save_weights(path_to_file)
 
     def load_model(self, path_to_file: str = 'word2vec_model.h5'):
-        self.predict(
-            (np.random.randint(self.vocab_size, size=(5, 1)), np.random.randint(self.vocab_size, size=(5, self.context_dim))))
+        # self.predict(
+        #     (np.random.randint(self.vocab_size, size=(5, 1)), np.random.randint(self.vocab_size, size=(5, self.context_dim))))
         self.load_weights(path_to_file)
 
-    def load_base_weights(self, path_to_file: str = 'word2vec_embeddings.npy'):
+    def load_base_weights(self, path_to_file: str = 'word2vec_embeddings.npy', fine_tune_enabled=False):
         self.predict(
             (np.random.randint(self.vocab_size, size=(5, 1)), np.random.randint(self.vocab_size, size=(5, self.context_dim))))
         base_embedding_weights = np.load(path_to_file)
-        # current_embedding_weights = self.target_embedding.get_weights()[0]
-
-        # current_embedding_weights[:base_embedding_weights.shape[0]
-        #                           ] = base_embedding_weights
         self.base_target_embedding.set_weights([base_embedding_weights])
-        self.base_target_embedding.trainable = False
+        self.base_target_embedding.trainable = fine_tune_enabled
 
 
 """### Define loss function and compile model
@@ -171,7 +162,7 @@ It's time to build your model! Instantiate your word2vec class with an embedding
 embedding_dim = 128
 word2vec = Word2Vec_Online(vocab_size, 3800, embedding_dim,
                            context_dim=num_ns+1, temperature=0.1, normalize=True, share_emebdding=True)
-word2vec.run_eagerly = True
+# word2vec.run_eagerly = True
 
 
 """Also define a callback to log training statistics for Tensorboard:"""
@@ -180,19 +171,28 @@ if use_pretrained:
     word2vec.load_model(load_model_path)
 else:
     if use_base_weights:
-        word2vec.load_base_weights(load_base_weights_path)
-
-    _, test_acc = word2vec.evaluate(
-        (test_targets, test_contexts), test_labels, batch_size=BATCH_SIZE, verbose=0)
-
-    print('test accuracy before training', test_acc)
-
-    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir="logs")
-    word2vec.fit((train_targets, train_contexts), train_labels, batch_size=BATCH_SIZE, epochs=100, validation_split=0.05,
-                 callbacks=[tensorboard_callback])
-    word2vec.save_model()
+        word2vec.load_base_weights(
+            load_base_weights_path, finetune_base_weights)
 
 # tf.keras.utils.plot_model(word2vec.build_graph(), show_shapes=True)
+
+word2vec.compile(optimizer='adam',
+                 loss=tf.keras.losses.CategoricalCrossentropy(
+                     from_logits=True),
+                 metrics=['accuracy'])
+
+_, test_acc = word2vec.evaluate(
+    (test_targets, test_contexts), test_labels, batch_size=BATCH_SIZE, verbose=0)
+
+print('test accuracy before training', test_acc)
+
+tf.keras.utils.plot_model(word2vec.build_graph(), show_shapes=True)
+
+
+tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir="logs")
+word2vec.fit((train_targets, train_contexts), train_labels, batch_size=BATCH_SIZE, epochs=20, validation_split=0.05,
+             callbacks=[tensorboard_callback])
+word2vec.save_model()
 
 _, test_acc = word2vec.evaluate(
     (test_targets, test_contexts), test_labels, batch_size=BATCH_SIZE, verbose=0)
