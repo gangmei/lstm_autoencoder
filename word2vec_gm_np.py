@@ -130,7 +130,7 @@ It's time to build your model! Instantiate your word2vec class with an embedding
 embedding_dim = 128
 word2vec = Word2Vec(vocab_size, embedding_dim,
                     context_dim=num_ns+1, temperature=0.1, normalize=True, share_emebdding=True)
-# word2vec.run_eagerly = True
+word2vec.run_eagerly = True
 
 
 """Also define a callback to log training statistics for Tensorboard:"""
