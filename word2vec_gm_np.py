@@ -16,13 +16,18 @@ AUTOTUNE = tf.data.AUTOTUNE
 
 To perform efficient batching for the potentially large number of training examples, use the `tf.data.Dataset` API. After this step, you would have a `tf.data.Dataset` object of `(target_word, context_word), (label)` elements to train your word2vec model!
 """
-load_data = mpu.io.read('word2vec_onlinebase_neg100.pickle')
+load_data = mpu.io.read('word2vec_neg100.pickle')
 use_pretrained = True
-load_model_path = 'word2vec_model_onlinebase.h5'
+# load_model_path = 'word2vec_model_onlinebase.h5'
+load_model_path = 'word2vec_model_neg100.h5'
+
 
 targets, contexts, labels = load_data['targets'], load_data['contexts'], load_data['labels']
 
 vocab_size = np.max(contexts) + 1
+vocab_size = 4096
+
+print(vocab_size)
 num_ns = labels.shape[-1] - 1
 BATCH_SIZE = 1024
 BUFFER_SIZE = 10000

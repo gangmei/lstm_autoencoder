@@ -15,12 +15,12 @@ SEED = 42
 
 To perform efficient batching for the potentially large number of training examples, use the `tf.data.Dataset` API. After this step, you would have a `tf.data.Dataset` object of `(target_word, context_word), (label)` elements to train your word2vec model!
 """
-load_data = mpu.io.read('word2vec_onlinenew_neg100.pickle')
-use_pretrained = False
+load_data = mpu.io.read('word2vec_neg100.pickle')
+use_pretrained = True
 use_base_weights = True
-finetune_base_weights = True
+finetune_base_weights = False
 
-load_model_path = 'word2vec_model_onlinebase.h5'
+load_model_path = 'word2vec_model_onlinefull.h5'
 load_base_weights_path = 'word2vec_embedding_onlinebase.npy'
 
 
@@ -77,6 +77,11 @@ class Word2Vec_Online(models.Model):
         self.normalize = normalize
         self.base_vocab_size = base_vocab_size
         self.vocab_size = vocab_size
+
+        self.compile(optimizer='adam',
+                     loss=tf.keras.losses.CategoricalCrossentropy(
+                         from_logits=True),
+                     metrics=['accuracy'])
 
         # self.base_target_embedding.build(tf.TensorShape([None, 1]))
         # self.online_target_embedding.build(tf.TensorShape([None, context_dim]))
@@ -135,16 +140,22 @@ class Word2Vec_Online(models.Model):
         self.save_weights(path_to_file)
 
     def load_model(self, path_to_file: str = 'word2vec_model.h5'):
-        # self.predict(
-        #     (np.random.randint(self.vocab_size, size=(5, 1)), np.random.randint(self.vocab_size, size=(5, self.context_dim))))
+        self.predict(
+            (np.random.randint(self.vocab_size, size=(5, 1)), np.random.randint(self.vocab_size, size=(5, self.context_dim))))
         self.load_weights(path_to_file)
 
-    def load_base_weights(self, path_to_file: str = 'word2vec_embeddings.npy', fine_tune_enabled=False):
+    def load_base_weights(self, path_to_file: str = 'word2vec_embedding_onlinebase.npy', fine_tune_enabled=False):
         self.predict(
             (np.random.randint(self.vocab_size, size=(5, 1)), np.random.randint(self.vocab_size, size=(5, self.context_dim))))
         base_embedding_weights = np.load(path_to_file)
         self.base_target_embedding.set_weights([base_embedding_weights])
         self.base_target_embedding.trainable = fine_tune_enabled
+
+    def save_np_weights(self, path_to_file: str = 'word2vec_embedding_onlinefull.npy'):
+        base_weights = self.base_target_embedding.get_weights()
+        online_weights = self.online_target_embedding.get_weights()
+        all_weights = np.vstack([base_weights[0], online_weights[0]])
+        np.save(path_to_file, all_weights)
 
 
 """### Define loss function and compile model
@@ -173,24 +184,20 @@ else:
         word2vec.load_base_weights(
             load_base_weights_path, finetune_base_weights)
 
-word2vec.compile(optimizer='adam',
-                 loss=tf.keras.losses.CategoricalCrossentropy(
-                     from_logits=True),
-                 metrics=['accuracy'])
-# word2vec.run_eagerly = True
+    # word2vec.run_eagerly = True
 
-_, test_acc = word2vec.evaluate(
-    (test_targets, test_contexts), test_labels, batch_size=BATCH_SIZE, verbose=0)
+    _, test_acc = word2vec.evaluate(
+        (test_targets, test_contexts), test_labels, batch_size=BATCH_SIZE, verbose=0)
 
-print('test accuracy before training', test_acc)
+    print('test accuracy before training', test_acc)
 
-tf.keras.utils.plot_model(word2vec.build_graph(), show_shapes=True)
+    tf.keras.utils.plot_model(word2vec.build_graph(), show_shapes=True)
 
-
-tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir="logs")
-word2vec.fit((train_targets, train_contexts), train_labels, batch_size=BATCH_SIZE, epochs=50, validation_split=0.05,
-             callbacks=[tensorboard_callback])
-word2vec.save_model()
+    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir="logs")
+    word2vec.fit((train_targets, train_contexts), train_labels, batch_size=BATCH_SIZE, epochs=50, validation_split=0.05,
+                 callbacks=[tensorboard_callback])
+    word2vec.save_model()
+    word2vec.save_np_weights()
 
 _, test_acc = word2vec.evaluate(
     (test_targets, test_contexts), test_labels, batch_size=BATCH_SIZE, verbose=0)
