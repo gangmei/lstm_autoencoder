@@ -80,8 +80,7 @@ class Word2Vec_Online(models.Model):
 
         # self.base_target_embedding.build(tf.TensorShape([None, 1]))
         # self.online_target_embedding.build(tf.TensorShape([None, context_dim]))
-
-    def online_embed(self, input_tensor):
+    def online_embed(self, input_tensor, name_prefix=''):
         """ method to apply online embedding with an input tensor. 
         For tokens within base vocab (id < base_vocab_size), apply base_target_embedding.
         For new tokens (id >= base_vocab_size, apply online_target_embedding) 
@@ -97,24 +96,24 @@ class Word2Vec_Online(models.Model):
         input_mask = tf.cast(
             input_tensor < self.base_vocab_size, dtype=tf.int64)
 
-        base_output = self.base_target_embedding(input_mask * input_tensor)
+        base_output = self.base_target_embedding(input_tensor)
         input_mask2 = tf.repeat(tf.expand_dims(
             input_mask, axis=-1), base_output.shape[-1], axis=2)
-        base_output_masked = layers.multiply(
+        base_output_masked = layers.Multiply(name=name_prefix + 'base_output_masked')(
             [base_output, tf.cast(input_mask2, dtype=tf.float32)])
 
         online_output = self.online_target_embedding(
-            (1-input_mask) * (input_tensor-self.base_vocab_size))
-        online_output_masked = layers.multiply(
-            [online_output, tf.cast(1-input_mask2, dtype=tf.float32)])
+            input_tensor-self.base_vocab_size)
+        online_output_masked = layers.Multiply(name=name_prefix + 'online_output_masked')([online_output, tf.cast(
+            tf.ones_like(input_mask2)-input_mask2, dtype=tf.float32)])
 
-        return base_output_masked + online_output_masked
+        return layers.Add(name=name_prefix + 'total_embedding')([base_output_masked, online_output_masked])
 
     def call(self, pair):
         target, context = pair
 
-        word_emb = self.online_embed(target)
-        context_emb = self.online_embed(context)
+        word_emb = self.online_embed(target, name_prefix='target_')
+        context_emb = self.online_embed(context, name_prefix='context_')
 
         dots = layers.Dot(
             axes=-1, normalize=self.normalize)([context_emb, word_emb])
@@ -124,10 +123,11 @@ class Word2Vec_Online(models.Model):
         return dots
 
     def build_graph(self):
-        target = tf.keras.Input(shape=(1,), dtype=tf.int64)
-        context = tf.keras.Input(shape=(self.context_dim,), dtype=tf.int64)
+        target = layers.Input(shape=(1,), dtype=tf.int64, name='target_input')
+        context = layers.Input(shape=(self.context_dim,),
+                               dtype=tf.int64, name='context_input')
         output = self.call((target, context))
-        model = tf.keras.Model(
+        model = models.Model(
             inputs=[target, context], outputs=output, name="word2vec_model")
         return model
 
@@ -162,7 +162,6 @@ It's time to build your model! Instantiate your word2vec class with an embedding
 embedding_dim = 128
 word2vec = Word2Vec_Online(vocab_size, 3800, embedding_dim,
                            context_dim=num_ns+1, temperature=0.1, normalize=True, share_emebdding=True)
-# word2vec.run_eagerly = True
 
 
 """Also define a callback to log training statistics for Tensorboard:"""
@@ -174,12 +173,11 @@ else:
         word2vec.load_base_weights(
             load_base_weights_path, finetune_base_weights)
 
-# tf.keras.utils.plot_model(word2vec.build_graph(), show_shapes=True)
-
 word2vec.compile(optimizer='adam',
                  loss=tf.keras.losses.CategoricalCrossentropy(
                      from_logits=True),
                  metrics=['accuracy'])
+# word2vec.run_eagerly = True
 
 _, test_acc = word2vec.evaluate(
     (test_targets, test_contexts), test_labels, batch_size=BATCH_SIZE, verbose=0)
@@ -190,7 +188,7 @@ tf.keras.utils.plot_model(word2vec.build_graph(), show_shapes=True)
 
 
 tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir="logs")
-word2vec.fit((train_targets, train_contexts), train_labels, batch_size=BATCH_SIZE, epochs=20, validation_split=0.05,
+word2vec.fit((train_targets, train_contexts), train_labels, batch_size=BATCH_SIZE, epochs=50, validation_split=0.05,
              callbacks=[tensorboard_callback])
 word2vec.save_model()
 
