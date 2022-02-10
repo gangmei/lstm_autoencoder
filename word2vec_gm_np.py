@@ -119,6 +119,10 @@ class Word2Vec(models.Model):
             (np.random.rand(5, 1), np.random.rand(5, self.context_dim)))
         self.load_weights(path_to_file)
 
+    def save_np_weights(self, path_to_file: str = 'word2vec_embedding.npy'):
+        all_weights = self.target_embedding.get_weights()[0]
+        np.save(path_to_file, all_weights)
+
 
 """### Define loss function and compile model
 
@@ -142,6 +146,7 @@ word2vec.run_eagerly = True
 """Train the model on the `dataset` for some number of epochs:"""
 if use_pretrained:
     word2vec.load_model(load_model_path)
+    word2vec.save_np_weights()
 else:
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir="logs")
     word2vec.fit((train_targets, train_contexts), train_labels, batch_size=BATCH_SIZE, epochs=20, validation_split=0.05,
